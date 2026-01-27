@@ -278,6 +278,36 @@ def parse_orca_output(output_file):
     except Exception as e:
         return f"Error: {str(e)}", f"Error: {str(e)}", str(e)
 
+def extract_ir_spectrum(content):
+    lines = content.splitlines()
+    ir_data = []
+    in_block = False
+    header_seen = False
+    for line in lines:
+        if "IR SPECTRUM" in line:
+            in_block = True
+            header_seen = False
+            continue
+        if not in_block:
+            continue
+        if not header_seen:
+            if "Mode" in line and "freq" in line and "Int" in line:
+                header_seen = True
+            continue
+        if not line.strip() or line.lstrip().startswith("-"):
+            if ir_data:
+                break
+            continue
+        m = re.match(r"\s*\d+:\s+([-+]?\d*\.?\d+)\s+\S+\s+([-+]?\d*\.?\d+)", line)
+        if m:
+            try:
+                freq = float(m.group(1))
+                intensity = float(m.group(2))
+                ir_data.append((freq, intensity))
+            except ValueError:
+                continue
+    return ir_data
+
 def main():
     st.title("🧪 ORCA DFT Calculator")
     st.markdown("""
@@ -797,6 +827,7 @@ end
                 return
         
         # Create temporary directory
+        ir_internal_dat_content = ""
         with tempfile.TemporaryDirectory() as temp_dir:
             with st.status("Running ORCA calculation...", expanded=True) as status:
                 st.write("📝 Preparing ORCA input file...")
@@ -898,6 +929,15 @@ end
                     except Exception as e:
                         st.warning(f"orca_mapspc post-processing encountered an error: {e}")
 
+                # Internal IR spectrum extraction from ORCA output as a fallback
+                if generate_mapspc and "IR" in mapspc_spectra and full_output:
+                    ir_modes = extract_ir_spectrum(full_output)
+                    if ir_modes:
+                        lines = ["# freq_cm-1 intensity_km_per_mol"]
+                        for f_val, i_val in ir_modes:
+                            lines.append(f"{f_val:.6f} {i_val:.6f}")
+                        ir_internal_dat_content = "\n".join(lines)
+
                 # Persist ORCA input/output and spectrum files to ./output/run_<timestamp>
                 try:
                     output_root = Path("output")
@@ -944,22 +984,24 @@ end
                 st.caption("Final atomic coordinates (Ångströms)")
                 st.code(optimized_geometry, language=None)
 
-            # Spectrum data from orca_mapspc, if available
+            # Spectrum data from orca_mapspc or internal parser, if available
             if generate_mapspc and ("IR" in mapspc_spectra or "Raman" in mapspc_spectra):
                 st.divider()
                 st.subheader("📈 Spectrum data (orca_mapspc .dat files)")
-                if ir_dat_content:
-                    st.markdown("**IR spectrum (.ir.dat)**")
-                    with st.expander("View IR .dat content", expanded=False):
+                ir_display_content = ir_dat_content or ir_internal_dat_content
+                if ir_display_content:
+                    label = "IR spectrum (.ir.dat from orca_mapspc)" if ir_dat_content else "IR spectrum (parsed from ORCA output)"
+                    st.markdown(f"**{label}**")
+                    with st.expander("View IR data", expanded=False):
                         st.text_area(
-                            "IR .dat",
-                            value=ir_dat_content,
+                            "IR data",
+                            value=ir_display_content,
                             height=200,
                             label_visibility="collapsed",
                         )
                     st.download_button(
-                        label="📥 Download IR .dat",
-                        data=ir_dat_content,
+                        label="📥 Download IR data",
+                        data=ir_display_content,
                         file_name="spectrum_ir.dat",
                         mime="text/plain",
                         use_container_width=True,
